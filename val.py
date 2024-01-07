@@ -108,9 +108,18 @@ def run(data,
         compute_loss=None,
         ):
     # Initialize/load model and set device
-    training = model is not None
-    if training:  # called by train.py
+    training = model is not None 
+    if training and task != "val_server" :  # called by train.py
         device = next(model.parameters()).device  # get model device
+    
+    elif task == "val_server":
+
+        device = next(model.parameters()).device  # get model device
+        data = check_dataset(data)  # check
+      
+        gs = max(int(model.stride.max()), 32)  # grid size (max stride)
+        imgsz = check_img_size(imgsz, s=gs)  # check image size
+
 
     else:  # called directly
         device = select_device(device, batch_size=batch_size)
@@ -138,7 +147,7 @@ def run(data,
 
     # Configure
     model.eval()
-    is_coco = isinstance(data.get('val'), str) and data['val'].endswith('coco/val2017.txt')  # COCO dataset
+    is_coco = False
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     niou = iouv.numel()
@@ -148,9 +157,21 @@ def run(data,
         if device.type != 'cpu':
             model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         pad = 0.0 if task == 'speed' else 0.5
-        task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
+        task = task if task in ('train', 'val', 'test','val_server') else 'val'  # path to train/val/test images
+        
         dataloader = create_dataloader(data[task], imgsz, batch_size, gs, single_cls, pad=pad, rect=True,
                                        prefix=colorstr(f'{task}: '))[0]
+    
+    if task=="val_server":
+        if device.type != 'cpu':
+            model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+        pad = 0.0 if task == 'speed' else 0.5
+        val_server_path = "datasets/VisDrone/"+data[task]
+        print(val_server_path)
+        dataloader = create_dataloader(val_server_path, imgsz, batch_size, gs, single_cls, pad=pad, rect=True,
+                                       prefix=colorstr(f'{task}: '))[0]
+
+        
 
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc)
