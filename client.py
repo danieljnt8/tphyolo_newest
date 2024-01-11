@@ -129,8 +129,7 @@ def get_init_helper(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     
 def train(model,
-          pretrained,
-          hyp,  # path/to/hyp.yaml or hyp dictionary
+          pretrained, # path/to/hyp.yaml or hyp dictionary opt.hyp
           opt,
           device,
           callbacks,
@@ -140,10 +139,11 @@ def train(model,
           cid = None
 
           ):
-    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, = \
+    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze = \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
         opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze
 
+    hyp = opt.hyp
     # Directories
     
     round_dir = increment_path(Path(opt.save_dir) /str(cid)/"round", exist_ok=False)
@@ -400,6 +400,8 @@ def train(model,
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
                     loss *= 4.
+                
+                #print(f"Loss Result - lbox_loss: {loss_items[0].item()}, lobj_loss: {loss_items[1].item()}, lcls_loss: {loss_items[2].item()}, Total Loss: {loss_items.sum().item()}")
 
             # Backward
             scaler.scale(loss).backward()
@@ -650,9 +652,9 @@ class FlowerClient(fl.client.NumPyClient):
 
         set_parameters(self.net, parameters)
         if pretrained: 
-            results,nb = train(self.net,pretrained,opt.hyp, opt, device, callbacks,ckpt=ckpt,exclude=exclude,csd=csd,cid=self.cid)
+            results,nb = train(self.net,pretrained, opt, device, callbacks,ckpt=ckpt,exclude=exclude,csd=csd,cid=self.cid)
         else:
-            results,nb = train(self.net,pretrained,opt.hyp, opt, device, callbacks,cid=self.cid)
+            results,nb = train(self.net,pretrained,opt, device, callbacks,cid=self.cid)
 
         return get_parameters(self.net), nb, {}
 
