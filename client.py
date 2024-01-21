@@ -16,7 +16,7 @@ import time
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-
+import copy 
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -52,6 +52,7 @@ from utils.metrics import fitness
 from utils.plots import plot_evolve, plot_labels
 from utils.torch_utils import (EarlyStopping, ModelEMA, de_parallel, intersect_dicts, select_device,
                                torch_distributed_zero_first)
+from utils.helper_fl import on_fit_epoch_fl,on_train_end_fl
 
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv('RANK', -1))
@@ -129,7 +130,7 @@ def get_init_helper(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     
 def train(model,
-          pretrained, # path/to/hyp.yaml or hyp dictionary opt.hyp
+          pretrained, #
           opt,
           device,
           callbacks,
@@ -137,14 +138,16 @@ def train(model,
           exclude=None,
           csd = None,
           cid = None
-
+        
           ):
     save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze = \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
         opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze
 
-    hyp = opt.hyp
+    
     # Directories
+    hyp = ROOT / 'data/hyps/hyp.VisDrone.yaml'
+    hyp = check_yaml(hyp)
     
     round_dir = increment_path(Path(opt.save_dir) /str(cid)/"round", exist_ok=False)
     (round_dir.parent if opt.evolve else round_dir).mkdir(parents=True, exist_ok=True)
@@ -328,6 +331,11 @@ def train(model,
     hyp['cls'] *= nc / 80 * 3 / nl  # scale to classes and layers
     hyp['obj'] *= (imgsz / 640) ** 2 * 3 / nl  # scale to image size and layers
     hyp['label_smoothing'] = opt.label_smoothing
+
+    print("Box "+str(hyp['box']))
+    print("Cls "+str(hyp['cls']))
+    print("Obj "+str(hyp['obj']))
+    print("---------------------------------")
     model.nc = nc  # attach number of classes to model
     model.hyp = hyp  # attach hyperparameters to model
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
@@ -450,7 +458,8 @@ def train(model,
             if fi > best_fitness:
                 best_fitness = fi
             log_vals = list(mloss) + list(results) + lr
-            callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
+            #callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
+            on_fit_epoch_fl(log_vals,epoch,best_fitness,fi,round_dir)
 
             # Save model
             if (not nosave) or (final_epoch and not evolve):  # if save
@@ -511,7 +520,8 @@ def train(model,
                     if is_coco:
                         callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
 
-        callbacks.run('on_train_end', last, best, plots, epoch, results)
+        #callbacks.run('on_train_end', last, best, plots, epoch, results)
+        on_train_end_fl(last,best,plots,epoch,results,round_dir)
         LOGGER.info(f"Results saved to {colorstr('bold', round_dir)}")
 
     torch.cuda.empty_cache()
@@ -667,6 +677,6 @@ class FlowerClient(fl.client.NumPyClient):
 
 # Start Flower client
 fl.client.start_numpy_client(
-    server_address="127.0.0.1:8080",
+    server_address="127.0.0.1:8081",
     client=FlowerClient(model,opt.clientid),
 )
