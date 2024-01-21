@@ -28,7 +28,8 @@ class Callbacks:
         'on_val_batch_end': [],
         'on_val_end': [],
 
-        'on_fit_epoch_end': [],  # fit = train + val
+        'on_fit_epoch_end': [], 
+        'on_fit_epoch_fl': [],                 # fit = train + val
         'on_model_save': [],
         'on_train_end': [],
 
