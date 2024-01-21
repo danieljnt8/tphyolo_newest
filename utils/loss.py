@@ -176,17 +176,26 @@ class ComputeLoss:
                 #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
 
             obji = self.BCEobj(pi[..., 4], tobj)
+            #print("Balance "+str(self.balance[i]))
+            #print("Before lobj "+ str(lobj))
             lobj += obji * self.balance[i]  # obj loss
+            #print("obji "+str(obji))
+            #print("lobj "+ str(lobj))
+            
             if self.autobalance:
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
 
         if self.autobalance:
             self.balance = [x / self.balance[self.ssi] for x in self.balance]
+        
+       
         lbox *= self.hyp['box']
         lobj *= self.hyp['obj']
         lcls *= self.hyp['cls']
-        bs = tobj.shape[0]  # batch size
 
+        
+        bs = tobj.shape[0]  # batch size
+       
         return (lbox + lobj + lcls) * bs, torch.cat((lbox, lobj, lcls)).detach()
 
     def build_targets(self, p, targets):
