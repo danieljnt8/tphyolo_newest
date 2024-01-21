@@ -27,6 +27,9 @@ from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import SGD, Adam, lr_scheduler
 from tqdm import tqdm
+from utils.helper_fl import on_fit_eval_fl
+from utils.loss import ComputeLoss
+
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
@@ -111,7 +114,8 @@ def get_init_helper(hyp,  # path/to/hyp.yaml or hyp dictionary
     train_path, val_path = data_dict['train'], data_dict['val']
    
     nc = 1 if single_cls else int(data_dict['nc'])  # number of classes
-
+    names = ['item'] if single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
+    assert len(names) == nc, f'{len(names)} names found for nc={nc} dataset in {data}'  # check
     print("TRAIN_PATH "+train_path)
    
     # Model
@@ -128,10 +132,12 @@ def get_init_helper(hyp,  # path/to/hyp.yaml or hyp dictionary
         model.load_state_dict(csd, strict=False)  # load
         LOGGER.info(f'Transferred {len(csd)}/{len(model.state_dict())} items from {weights}')  # report
 
-        return model,pretrained,ckpt,exclude,csd
+        return model,pretrained,ckpt,exclude,csd,nc,names
     else:
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
-        return model,pretrained,ckpt,exclude,csd
+        return model,pretrained,ckpt,exclude,csd,nc,names
+
+"""
 
 def prepare(opt, callbacks=Callbacks()):
     # Checks
@@ -170,14 +176,14 @@ def prepare(opt, callbacks=Callbacks()):
 
     # Train
     if not opt.evolve:
-        model,pretrained,ckpt,exclude,csd = get_init_helper(opt.hyp, opt, device, callbacks)
+        model,pretrained,ckpt,exclude,csd,nc,names = get_init_helper(opt.hyp, opt, device, callbacks)
         if WORLD_SIZE > 1 and RANK == 0:
             LOGGER.info('Destroying process group... ')
             dist.destroy_process_group()
 
-    return model,pretrained,ckpt,exclude,csd,device,callbacks
+    return model,pretrained,ckpt,exclude,csd,device,callbacks,nc,names
 
-
+"""
 
 
 
@@ -266,15 +272,16 @@ def prepare(opt, callbacks=Callbacks()):
 
     # Train
     if not opt.evolve:
-        model,pretrained,ckpt,exclude,csd = get_init_helper(opt.hyp, opt, device, callbacks)
+        model,pretrained,ckpt,exclude,csd,nc,names = get_init_helper(opt.hyp, opt, device, callbacks)
         if WORLD_SIZE > 1 and RANK == 0:
             LOGGER.info('Destroying process group... ')
             dist.destroy_process_group()
 
-    return model,pretrained,ckpt,exclude,csd,device,callbacks
+    return model,pretrained,ckpt,exclude,csd,device,callbacks,nc,names
 
 opt = parse_opt()
-model,_,_,_,_,_,_ = prepare(opt)
+imgsz = opt.imgsz
+model,_,_,_,_,_,_ ,nc,names= prepare(opt)
 
 
 def set_parameters(net, parameters):      
@@ -286,7 +293,7 @@ def set_parameters(net, parameters):
 def save_model(net, save_path: str):
     # Save the state dictionary along with weights to a .pt file
     torch.save({'state_dict': net.state_dict(),
-                'weights': [param.detach().numpy() for param in net.parameters()]}, save_path)
+                'weights': [param.cpu().detach().numpy() for param in net.parameters()]}, save_path)
 
 # The `evaluate` function will be by Flower called after every round
 def evaluate_server(
@@ -295,7 +302,24 @@ def evaluate_server(
     config
 ) -> Optional[Tuple[float, Dict[str, fl.common.Scalar]]]:
     net = model
+
+    hyp = ROOT / 'data/hyps/hyp.VisDrone.yaml'
+    hyp = check_yaml(hyp)
+
+    if isinstance(hyp, str):
+        with open(hyp, errors='ignore') as f:
+            hyp = yaml.safe_load(f)  # load hyps dict
+
+    nl = de_parallel(model).model[-1].nl  # number of detection layers (to scale hyps)
+    hyp['box'] *= 3 / nl  # scale to layers
+    hyp['cls'] *= nc / 80 * 3 / nl  # scale to classes and layers
+    hyp['obj'] *= (imgsz / 640) ** 2 * 3 / nl  # scale to image size and layers
+    hyp['label_smoothing'] = opt.label_smoothing
     
+    net.nc = nc
+    net.hyp = hyp
+    net.names = names
+
     save_dir = increment_path(Path(opt.save_dir) /"server"/"round", exist_ok=False)
     weights_p = save_dir/ 'weights.pt'
 
@@ -305,7 +329,11 @@ def evaluate_server(
     #val_fl(opt.data,net,self.cid,batch_size=opt.batch_size)
 
     save_model(net,weights_p)
-    val.run(model = net,imgsz=1996,data="./data/VisDrone.yaml",batch_size = opt.batch_size,task="val_server",save_dir = save_dir)
+    compute_loss = ComputeLoss(net)
+    results,_,_ = val.run(model = net,imgsz=imgsz,data="./data/VisDrone.yaml",batch_size = opt.batch_size,task="val_server",save_dir = save_dir,
+    compute_loss=compute_loss)
+    on_fit_eval_fl(list(results), 1,save_dir )
+    torch.cuda.empty_cache()
     return 0.01, {"accuracy": 1}
 
 
@@ -313,8 +341,8 @@ def evaluate_server(
 strategy = fl.server.strategy.FedAvg(evaluate_fn = evaluate_server)
 # Start Flower server
 fl.server.start_server(
-    server_address="0.0.0.0:8080",
-    config=fl.server.ServerConfig(num_rounds=3),
+    server_address="0.0.0.0:8081",
+    config=fl.server.ServerConfig(num_rounds=8),
     strategy=strategy
     
 )
